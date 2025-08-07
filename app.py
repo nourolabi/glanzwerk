@@ -1,289 +1,433 @@
 import streamlit as st
-import sqlite3
-import tempfile
-import os
-from datetime import datetime
+import pandas as pd
+from datetime import datetime, timedelta
 from fpdf import FPDF
+import io
 import base64
-from pdf_generator_new import generate_invoice_pdf_new
+import re
+from PIL import Image
 
-# Konfiguration der Streamlit-Seite
+# Page configuration
 st.set_page_config(
-    page_title="Glanzwerk Rechnungssystem",
+    page_title="Glanzwerk Rheinland - Invoice System",
     page_icon="🚗",
-    layout="centered",
-    initial_sidebar_state="collapsed"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-# CSS für das Design
+# Custom CSS
 st.markdown("""
 <style>
     .main-header {
-        background: linear-gradient(135deg, #2d5016 0%, #5a9216 100%);
-        color: white;
-        padding: 2rem;
-        border-radius: 15px;
         text-align: center;
-        margin-bottom: 2rem;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
-    }
-    
-    .main-header h1 {
-        font-size: 2.5rem;
-        margin-bottom: 0.5rem;
-        text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
-    }
-    
-    .main-header p {
-        font-size: 1.2rem;
-        opacity: 0.9;
-        margin: 0;
-    }
-    
-    .invoice-preview {
-        background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
-        padding: 2rem;
-        border-radius: 15px;
-        border-left: 5px solid #5a9216;
-        margin-top: 2rem;
-    }
-    
-    .discount-badge {
-        background: linear-gradient(135deg, #ff6b6b 0%, #ee5a24 100%);
+        padding: 2rem 0;
+        background: linear-gradient(135deg, #10b981, #059669);
         color: white;
-        padding: 0.5rem 1rem;
-        border-radius: 20px;
-        font-weight: bold;
-        display: inline-block;
-        margin-left: 10px;
-    }
-    
-    .footer {
-        text-align: center;
-        padding: 1rem;
-        color: #6c757d;
-        font-size: 0.9rem;
-        margin-top: 2rem;
-    }
-    
-    .stButton > button {
-        background: linear-gradient(135deg, #5a9216 0%, #2d5016 100%);
-        color: white;
-        border: none;
         border-radius: 10px;
-        padding: 0.75rem 2rem;
-        font-size: 1.1rem;
-        font-weight: 600;
-        width: 100%;
+        margin-bottom: 2rem;
     }
-    
-    .stButton > button:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 5px 15px rgba(90, 146, 22, 0.3);
+    .service-card {
+        background: #f0fdf4;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #10b981;
+        margin: 0.5rem 0;
+    }
+    .invoice-preview {
+        background: white;
+        padding: 2rem;
+        border-radius: 10px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        border: 1px solid #e5e7eb;
+    }
+    .total-amount {
+        background: #10b981;
+        color: white;
+        padding: 1rem;
+        border-radius: 8px;
+        text-align: center;
+        font-size: 1.5rem;
+        font-weight: bold;
+    }
+    .discount-badge {
+        background: #dcfce7;
+        color: #166534;
+        padding: 0.25rem 0.75rem;
+        border-radius: 20px;
+        font-size: 0.875rem;
+        font-weight: 500;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Logo anzeigen
-logo_path = "Glanzwerk_logo_no_background.png"
-if os.path.exists(logo_path):
-    with open(logo_path, "rb") as f:
-        logo_base64 = base64.b64encode(f.read()).decode()
-else:
-    logo_base64 = ""
-# Service-Preise
-SERVICE_PRICES = {
-    'Außenreinigung per Hand': 25.0,
-    'Felgenreinigung & Flugrostentfernung': 15.0,
-    'Innenraumreinigung': 30.0,
-    'Lederreinigung & -pflege': 40.0,
-    'Lederreparatur': 60.0,
-    'Polster- & Teppichreinigung': 35.0,
-    'Scheibenreinigung innen & außen': 10.0,
-    'Lackpolitur & Glanzversiegelung': 80.0,
-    'Nano-Keramik-Versiegelung': 150.0,
-    'Motorraumreinigung': 25.0,
-    'Geruchsneutralisierung & Ozonbehandlung': 45.0,
-    'Tierhaarentfernung': 20.0,
-    'Hagelschaden- und Dellenentfernung (Ausbeulen ohne Lackieren)': 100.0,
-    'Auto Folieren': 200.0,
-    'Abhol- und Bringservice': 15.0
-}
+class GlanzwerkInvoicePDF(FPDF):
+    def __init__(self):
+        super().__init__()
+        self.set_auto_page_break(auto=True, margin=15)
+        
+    def header(self):
+        # Company header
+        self.set_font('Arial', 'B', 16)
+        self.cell(0, 10, 'GLANZWERK RHEINLAND', 0, 1, 'C')
+        self.set_font('Arial', '', 10)
+        self.cell(0, 5, 'Grün gedacht, sauber gemacht', 0, 1, 'C')
+        self.cell(0, 5, 'Krasnaer Str. 1, 56566 Neuwied, Deutschland', 0, 1, 'C')
+        self.ln(10)
+        
+    def footer(self):
+        self.set_y(-40)
+        self.set_font('Arial', '', 9)
+        
+        # Contact information
+        self.cell(60, 4, 'Glanzwerk Rheinland', 0, 0, 'L')
+        self.cell(70, 4, 'Glanzwerk.Rheinland@gmail.com', 0, 0, 'L')
+        self.cell(60, 4, 'Bankverbindung:', 0, 1, 'L')
+        
+        self.cell(60, 4, 'Krasnaer Str. 1', 0, 0, 'L')
+        self.cell(70, 4, '+49 171 1858241', 0, 0, 'L')
+        self.cell(60, 4, 'Bank: Sparkasse Neuwied', 0, 1, 'L')
+        
+        self.cell(60, 4, '56566 Neuwied', 0, 0, 'L')
+        self.cell(70, 4, 'Instagram: @glanzwerk_rheinland', 0, 0, 'L')
+        self.cell(60, 4, 'IBAN: DE89 5745 0120 0000 1234 56', 0, 1, 'L')
 
-def init_db():
-    """Initialisiert die SQLite-Datenbank"""
-    conn = sqlite3.connect('glanzwerk.db')
-    c = conn.cursor()
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS customers (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL UNIQUE
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS visits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            customer_id INTEGER NOT NULL,
-                        visit_date TEXT NOT NULL,
-            FOREIGN KEY (customer_id) REFERENCES customers(id)
-        )
-    """)
-    conn.commit()
-    conn.close()
+def parse_additional_services(text):
+    """Parse additional services from text format"""
+    if not text or not text.strip():
+        return []
+    
+    services = []
+    for line in text.strip().split('\n'):
+        match = re.match(r'^(.+?):\s*(\d+(?:\.\d{1,2})?)€?$', line.strip(), re.IGNORECASE)
+        if match:
+            services.append({
+                'description': match.group(1).strip(),
+                'price': float(match.group(2))
+            })
+    
+    return services
 
-def add_customer(name):
-    """Fügt einen Kunden hinzu oder gibt die ID zurück, falls er bereits existiert"""
-    conn = sqlite3.connect('glanzwerk.db')
-    c = conn.cursor()
-    try:
-        c.execute('INSERT INTO customers (name) VALUES (?)', (name,))
-        conn.commit()
-        return c.lastrowid
-    except sqlite3.IntegrityError:
-        # Kunde existiert bereits, gib seine ID zurück
-        c.execute('SELECT id FROM customers WHERE name = ?', (name,))
-        return c.fetchone()[0]
-    finally:
-        conn.close()
-
-def record_visit(customer_id):
-    """Zeichnet einen Besuch auf"""
-    conn = sqlite3.connect('glanzwerk.db')
-    c = conn.cursor()
-    c.execute('INSERT INTO visits (customer_id, visit_date) VALUES (?, DATE(\'now\'))', (customer_id,))
-    conn.commit()
-    conn.close()
-
-def get_customer_visits(customer_id):
-    """Gibt die Anzahl der Besuche eines Kunden zurück"""
-    conn = sqlite3.connect('glanzwerk.db')
-    c = conn.cursor()
-    c.execute('SELECT COUNT(*) FROM visits WHERE customer_id = ?', (customer_id,))
-    count = c.fetchone()[0]
-    conn.close()
-    return count
-
-def create_download_link(file_path, filename):
-    """Erstellt einen Download-Link für eine Datei"""
-    with open(file_path, "rb") as f:
-        bytes_data = f.read()
-    b64 = base64.b64encode(bytes_data).decode()
-    href = f'<a href="data:application/pdf;base64,{b64}" download="{filename}" style="background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; padding: 15px 30px; text-decoration: none; border-radius: 10px; font-weight: 600; display: inline-block; margin-top: 1rem;">📥 PDF-Rechnung herunterladen</a>'
-    return href
+def generate_pdf(invoice_data):
+    """Generate PDF invoice"""
+    pdf = GlanzwerkInvoicePDF()
+    pdf.add_page()
+    
+    # Invoice header
+    current_date = datetime.now()
+    due_date = current_date + timedelta(days=14)
+    invoice_number = f"2025-{current_date.strftime('%m%d%H%M')}"
+    
+    pdf.set_xy(120, 35)
+    pdf.set_font('Arial', '', 11)
+    pdf.cell(70, 6, f'Rechnungsnummer: {invoice_number}', 0, 1, 'L')
+    pdf.set_x(120)
+    pdf.cell(70, 6, f'Rechnungsdatum: {current_date.strftime("%d.%m.%Y")}', 0, 1, 'L')
+    pdf.set_x(120)
+    pdf.cell(70, 6, f'Fälligkeitsdatum: {due_date.strftime("%d.%m.%Y")}', 0, 1, 'L')
+    
+    # Customer information
+    pdf.set_xy(10, 70)
+    pdf.set_font('Arial', 'B', 16)
+    pdf.cell(0, 10, 'RECHNUNG', 0, 1, 'L')
+    pdf.ln(5)
+    
+    pdf.set_font('Arial', '', 11)
+    pdf.cell(0, 6, 'Sehr geehrte Damen und Herren,', 0, 1, 'L')
+    pdf.ln(3)
+    pdf.cell(0, 6, 'vielen Dank für Ihre Inanspruchnahme unserer Dienstleistungen.', 0, 1, 'L')
+    pdf.ln(8)
+    
+    pdf.cell(0, 6, f'Kunde: {invoice_data["customer_name"]}', 0, 1, 'L')
+    pdf.cell(0, 6, f'Fahrzeug: {invoice_data["vehicle_number"]}', 0, 1, 'L')
+    pdf.ln(8)
+    
+    # Service table
+    pdf.set_font('Arial', 'B', 11)
+    pdf.cell(80, 8, 'Beschreibung', 1, 0, 'L')
+    pdf.cell(25, 8, 'Anzahl', 1, 0, 'C')
+    pdf.cell(25, 8, 'Einzelpreis', 1, 0, 'R')
+    pdf.cell(25, 8, 'MwSt.', 1, 0, 'R')
+    pdf.cell(25, 8, 'Gesamt', 1, 1, 'R')
+    
+    # Main service
+    pdf.set_font('Arial', '', 10)
+    service_net = invoice_data['service_price']
+    service_tax = service_net * 0.19
+    service_gross = service_net + service_tax
+    
+    pdf.cell(80, 8, invoice_data['service_name'], 1, 0, 'L')
+    pdf.cell(25, 8, '1', 1, 0, 'C')
+    pdf.cell(25, 8, f"{service_net:.2f}EUR", 1, 0, 'R')
+    pdf.cell(25, 8, f"{service_tax:.2f}EUR", 1, 0, 'R')
+    pdf.cell(25, 8, f"{service_gross:.2f}EUR", 1, 1, 'R')
+    
+    # Additional services
+    for additional in invoice_data['additional_services']:
+        add_net = additional['price']
+        add_tax = add_net * 0.19
+        add_gross = add_net + add_tax
+        
+        pdf.cell(80, 8, additional['description'], 1, 0, 'L')
+        pdf.cell(25, 8, '1', 1, 0, 'C')
+        pdf.cell(25, 8, f"{add_net:.2f}EUR", 1, 0, 'R')
+        pdf.cell(25, 8, f"{add_tax:.2f}EUR", 1, 0, 'R')
+        pdf.cell(25, 8, f"{add_gross:.2f}EUR", 1, 1, 'R')
+    
+    # Totals
+    pdf.set_font('Arial', 'B', 10)
+    pdf.cell(155, 8, 'Zwischensumme inkl. MwSt.', 1, 0, 'R')
+    pdf.cell(25, 8, f"{invoice_data['gross_price']:.2f}EUR", 1, 1, 'R')
+    
+    if invoice_data['total_discount_percent'] > 0:
+        pdf.set_font('Arial', '', 10)
+        pdf.cell(155, 8, f"Gesamtrabatt ({invoice_data['total_discount_percent']}%)", 1, 0, 'L')
+        pdf.cell(25, 8, f"-{invoice_data['discount_amount']:.2f}EUR", 1, 1, 'R')
+    
+    pdf.set_font('Arial', 'B', 11)
+    pdf.cell(155, 10, 'Gesamt inkl. MwSt.', 1, 0, 'R')
+    pdf.cell(25, 10, f"{invoice_data['total_price']:.2f}EUR", 1, 1, 'R')
+    
+    pdf.ln(8)
+    
+    # Payment information
+    pdf.set_font('Arial', '', 10)
+    pdf.cell(0, 6, f'Bitte überweisen Sie den Betrag bis spätestens {due_date.strftime("%d.%m.%Y")}', 0, 1, 'L')
+    pdf.ln(5)
+    pdf.cell(0, 6, 'Mit freundlichen Grüßen,', 0, 1, 'L')
+    pdf.cell(0, 6, 'Glanzwerk Rheinland', 0, 1, 'L')
+    
+    return pdf.output(dest='S').encode('latin1')
 
 def main():
-    # Initialisiere Datenbank
-    init_db()
-    
     # Header
     st.markdown("""
     <div class="main-header">
-        <h1><img src="data:image/png;base64,{logo_base64}" style="height: 50px; vertical-align: middle; margin-right: 10px;"> Glanzwerk Rechnungssystem</h1>
-        <p>Professionelle Fahrzeugpflege - Schnelle Rechnungserstellung</p>
+        <h1>🚗 Glanzwerk Rheinland</h1>
+        <h3>Professional Invoice System - نظام الفواتير الاحترافي</h3>
+        <p>Krasnaer Str. 1, 56566 Neuwied, Deutschland</p>
+        <p><em>Grün gedacht, sauber gemacht</em></p>
     </div>
     """, unsafe_allow_html=True)
     
-    # Eingabeformular
-    with st.form("invoice_form"):
-        st.subheader("📋 Rechnungsdaten eingeben")
+    # Services data
+    services = {
+        'aussenreinigung': {'name': 'Außenreinigung per Hand', 'price': 50, 'description': 'Professionelle Handwäsche außen'},
+        'felgenreinigung': {'name': 'Felgenreinigung & Flugrostentfernung', 'price': 30, 'description': 'Intensive Felgenpflege'},
+        'innenraumreinigung': {'name': 'Innenraumreinigung', 'price': 70, 'description': 'Komplette Innenraumreinigung'},
+        'lederreinigung': {'name': 'Lederreinigung & -pflege', 'price': 60, 'description': 'Professionelle Lederpflege'},
+        'lederreparatur': {'name': 'Lederreparatur', 'price': 100, 'description': 'Reparatur von Lederschäden'},
+        'polsterreinigung': {'name': 'Polster- & Teppichreinigung', 'price': 80, 'description': 'Tiefenreinigung der Polster'},
+        'scheibenreinigung': {'name': 'Scheibenreinigung innen & außen', 'price': 20, 'description': 'Kristallklare Scheiben'},
+        'lackpolitur': {'name': 'Lackpolitur & Glanzversiegelung', 'price': 150, 'description': 'Hochglanzpolitur mit Versiegelung'},
+        'nanokeramik': {'name': 'Nano-Keramik-Versiegelung', 'price': 300, 'description': 'Premium Keramikversiegelung'},
+        'motorraumreinigung': {'name': 'Motorraumreinigung', 'price': 40, 'description': 'Professionelle Motorraumreinigung'},
+        'geruchsneutralisierung': {'name': 'Geruchsneutralisierung & Ozonbehandlung', 'price': 50, 'description': 'Ozonbehandlung gegen Gerüche'},
+        'tierhaarentfernung': {'name': 'Tierhaarentfernung', 'price': 40, 'description': 'Spezielle Tierhaarentfernung'},
+        'hagelschaden': {'name': 'Hagelschaden- und Dellenentfernung', 'price': 200, 'description': 'Professionelle Dellenreparatur'},
+        'folierung': {'name': 'Auto Folierung', 'price': 500, 'description': 'Komplette Fahrzeugfolierung'},
+        'abholservice': {'name': 'Abhol- und Bringservice', 'price': 25, 'description': 'Bequemer Hol- und Bringservice'}
+    }
+    
+    discount_codes = {
+        'NEUKUNDE': 15,
+        'STAMMKUNDE': 10,
+        'WINTER2025': 20,
+        'SOMMER2025': 12
+    }
+    
+    # Layout
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        st.header("📋 Neue Rechnung erstellen")
         
-        col1, col2 = st.columns(2)
+        # Customer Information
+        st.subheader("👤 Kundendaten")
+        customer_name = st.text_input("Kundenname", placeholder="Kundenname eingeben")
+        vehicle_number = st.text_input("Fahrzeugkennzeichen", placeholder="Kennzeichen eingeben")
         
-        with col1:
-            customer_name = st.text_input("👤 Kundenname", placeholder="Geben Sie den Kundennamen ein")
+        # Service Selection
+        st.subheader("🚗 Hauptdienstleistung")
+        service_options = [f"{service['name']} - {service['price']}€" for service in services.values()]
+        service_names = list(services.keys())
         
-        with col2:
-            vehicle_number = st.text_input("🚙 Fahrzeugnummer / Kennzeichen", placeholder="z.B. NR-AB 1234")
-        
-        service = st.selectbox(
-            "🧽 Gewählte Leistung",
-            options=list(SERVICE_PRICES.keys()),
-            format_func=lambda x: f"{x} ({SERVICE_PRICES[x]:.2f}€)"
+        selected_service_index = st.selectbox(
+            "Dienstleistung auswählen",
+            range(len(service_options)),
+            format_func=lambda x: service_options[x],
+            index=None,
+            placeholder="Dienstleistung wählen"
         )
         
-        submitted = st.form_submit_button("📄 Rechnung generieren")
+        if selected_service_index is not None:
+            selected_service_key = service_names[selected_service_index]
+            selected_service = services[selected_service_key]
+            st.info(f"📝 {selected_service['description']}")
+        
+        # Additional Services
+        st.subheader("📄 Zusätzliche Dienstleistungen")
+        additional_services_text = st.text_area(
+            "Zusatzleistungen (Format: 'Beschreibung: Preis')",
+            placeholder="Beispiel:\nSpezialreinigung: 25€\nWachsbehandlung: 40€",
+            height=100
+        )
+        
+        # Discounts
+        st.subheader("💰 Rabatte")
+        is_regular_customer = st.checkbox("Stammkunde (10% Rabatt)")
+        discount_code = st.text_input("Rabattcode", placeholder="z.B. NEUKUNDE, STAMMKUNDE")
+        manual_discount = st.number_input("Manueller Rabatt (%)", min_value=0.0, max_value=100.0, step=0.1)
+        
+        # Calculate button
+        if st.button("🧮 Rechnung berechnen", type="primary", use_container_width=True):
+            if customer_name and vehicle_number and selected_service_index is not None:
+                # Store calculation in session state
+                st.session_state.invoice_calculated = True
+                st.session_state.customer_name = customer_name
+                st.session_state.vehicle_number = vehicle_number
+                st.session_state.selected_service = selected_service
+                st.session_state.additional_services_text = additional_services_text
+                st.session_state.is_regular_customer = is_regular_customer
+                st.session_state.discount_code = discount_code
+                st.session_state.manual_discount = manual_discount
+            else:
+                st.error("Bitte füllen Sie alle Pflichtfelder aus!")
     
-    if submitted and customer_name and vehicle_number and service:
-        # Kunde hinzufügen oder abrufen
-        customer_id = add_customer(customer_name)
+    with col2:
+        st.header("📄 Rechnungsvorschau")
         
-        # Besuch aufzeichnen
-        record_visit(customer_id)
-        
-        # Gesamtbesuche für Rabattberechnung abrufen
-        total_visits = get_customer_visits(customer_id)
-        
-        # Preisberechnung
-        net_price = SERVICE_PRICES[service]
-        tax_rate = 0.19
-        tax_amount = net_price * tax_rate
-        gross_price = net_price + tax_amount
-        
-        # 10% Rabatt nach 5 Besuchen anwenden
-        discount_applied = total_visits >= 5
-        discount_amount = 0
-        if discount_applied:
-            discount_amount = gross_price * 0.10
-        
-        total_price = gross_price - discount_amount
-        
-        # Rechnungsdaten für PDF-Generierung speichern
-        invoice_data = {
-            'customer_name': customer_name,
-            'vehicle_number': vehicle_number,
-            'service': service,
-            'net_price': net_price,
-            'tax_amount': tax_amount,
-            'discount_applied': discount_applied,
-            'discount_amount': discount_amount,
-            'total_price': total_price,
-            'total_visits': total_visits
-        }
-        
-        # Rechnungsvorschau anzeigen
-        st.markdown("""
-        <div class="invoice-preview">
-            <h2>📋 Rechnungsvorschau</h2>
-        </div>
-        """, unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.write(f"**Kunde:** {customer_name}")
-            st.write(f"**Fahrzeug:** {vehicle_number}")
-            st.write(f"**Leistung:** {service}")
-        
-        with col2:
-            st.write(f"**Nettobetrag:** {net_price:.2f}€")
-            st.write(f"**MwSt (19%):** {tax_amount:.2f}€")
-            if discount_applied:
-                st.markdown(f"**Stammkundenrabatt:** -{discount_amount:.2f}€ <span class='discount-badge'>🎉 10% Rabatt!</span>", unsafe_allow_html=True)
-        
-        st.markdown(f"### **Gesamtbetrag: {total_price:.2f}€**")
-        
-        if discount_applied:
-            st.success(f"🎊 Herzlichen Glückwunsch! Sie sind Stammkunde mit {total_visits} Besuchen und erhalten 10% Rabatt!")
-        
-        # PDF generieren mit neuem Design
-        pdf_path = generate_invoice_pdf_new(invoice_data)
-        filename = f"Rechnung_{customer_name.replace(' ', '_')}.pdf"
-        
-        # Download-Link erstellen
-        download_link = create_download_link(pdf_path, filename)
-        st.markdown(download_link, unsafe_allow_html=True)
-        
-        # Temporäre Datei nach dem Download löschen
-        if os.path.exists(pdf_path):
-            os.unlink(pdf_path)
-    
-    elif submitted:
-        st.error("Bitte füllen Sie alle Felder aus!")
+        if hasattr(st.session_state, 'invoice_calculated') and st.session_state.invoice_calculated:
+            # Calculate invoice
+            service = st.session_state.selected_service
+            additional_services = parse_additional_services(st.session_state.additional_services_text)
+            
+            # Calculate prices
+            service_price = service['price']
+            additional_total = sum(item['price'] for item in additional_services)
+            net_price = service_price + additional_total
+            
+            tax_rate = 0.19
+            tax_amount = net_price * tax_rate
+            gross_price = net_price + tax_amount
+            
+            # Calculate discounts
+            total_discount_percent = 0
+            discount_sources = []
+            
+            if st.session_state.is_regular_customer:
+                total_discount_percent += 10
+                discount_sources.append('Stammkundenrabatt (10%)')
+            
+            if st.session_state.discount_code.upper() in discount_codes:
+                code_discount = discount_codes[st.session_state.discount_code.upper()]
+                total_discount_percent += code_discount
+                discount_sources.append(f'Code {st.session_state.discount_code.upper()} ({code_discount}%)')
+            
+            if st.session_state.manual_discount > 0:
+                total_discount_percent += st.session_state.manual_discount
+                discount_sources.append(f'Manueller Rabatt ({st.session_state.manual_discount}%)')
+            
+            discount_amount = gross_price * (total_discount_percent / 100)
+            total_price = gross_price - discount_amount
+            
+            # Invoice preview
+            st.markdown('<div class="invoice-preview">', unsafe_allow_html=True)
+            
+            # Header
+            st.markdown("### 📋 RECHNUNG")
+            current_date = datetime.now()
+            due_date = current_date + timedelta(days=14)
+            invoice_number = f"2025-{current_date.strftime('%m%d%H%M')}"
+            
+            col_info1, col_info2 = st.columns(2)
+            with col_info1:
+                st.write(f"**Rechnungsnummer:** {invoice_number}")
+                st.write(f"**Kunde:** {st.session_state.customer_name}")
+            with col_info2:
+                st.write(f"**Datum:** {current_date.strftime('%d.%m.%Y')}")
+                st.write(f"**Fahrzeug:** {st.session_state.vehicle_number}")
+            
+            st.divider()
+            
+            # Service table
+            invoice_data = []
+            invoice_data.append({
+                'Beschreibung': service['name'],
+                'Preis': f"{service_price:.2f}€"
+            })
+            
+            for additional in additional_services:
+                invoice_data.append({
+                    'Beschreibung': additional['description'],
+                    'Preis': f"{additional['price']:.2f}€"
+                })
+            
+            invoice_data.append({
+                'Beschreibung': 'MwSt. (19%)',
+                'Preis': f"{tax_amount:.2f}€"
+            })
+            
+            invoice_data.append({
+                'Beschreibung': '**Zwischensumme**',
+                'Preis': f"**{gross_price:.2f}€**"
+            })
+            
+            if total_discount_percent > 0:
+                invoice_data.append({
+                    'Beschreibung': f'🎯 Gesamtrabatt ({total_discount_percent}%)',
+                    'Preis': f"-{discount_amount:.2f}€"
+                })
+            
+            df = pd.DataFrame(invoice_data)
+            st.table(df)
+            
+            # Total
+            st.markdown(f'<div class="total-amount">Gesamt inkl. MwSt.: {total_price:.2f}€</div>', unsafe_allow_html=True)
+            
+            # Discount badges
+            if discount_sources:
+                st.markdown("**Angewandte Rabatte:**")
+                for source in discount_sources:
+                    st.markdown(f'<span class="discount-badge">{source}</span>', unsafe_allow_html=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+            # PDF Generation
+            if st.button("📥 PDF-Rechnung herunterladen", type="secondary", use_container_width=True):
+                invoice_data_pdf = {
+                    'customer_name': st.session_state.customer_name,
+                    'vehicle_number': st.session_state.vehicle_number,
+                    'service_name': service['name'],
+                    'service_price': service_price,
+                    'additional_services': additional_services,
+                    'net_price': net_price,
+                    'tax_amount': tax_amount,
+                    'gross_price': gross_price,
+                    'total_discount_percent': total_discount_percent,
+                    'discount_sources': discount_sources,
+                    'discount_amount': discount_amount,
+                    'total_price': total_price
+                }
+                
+                pdf_bytes = generate_pdf(invoice_data_pdf)
+                
+                st.download_button(
+                    label="📄 PDF herunterladen",
+                    data=pdf_bytes,
+                    file_name=f"Rechnung_{st.session_state.customer_name.replace(' ', '_')}.pdf",
+                    mime="application/pdf",
+                    use_container_width=True
+                )
+        else:
+            st.info("📝 Füllen Sie das Formular aus, um eine Rechnungsvorschau zu sehen")
     
     # Footer
+    st.divider()
     st.markdown("""
-    <div class="footer">
-        <p>💻 Entwickelt von <strong>Mazen Design</strong> | Glanzwerk Rheinland - Krasnaer Str. 1, 56566 Neuwied</p>
+    <div style="text-align: center; color: #6b7280; font-size: 0.875rem;">
+        <p>© 2025 Glanzwerk Rheinland - Professional Car Wash Services</p>
+        <p>📞 +49 171 1858241 | 📧 Glanzwerk.Rheinland@gmail.com | 📍 Krasnaer Str. 1, 56566 Neuwied</p>
+        <p style="color: #10b981; font-weight: 500;">Grün gedacht, sauber gemacht</p>
     </div>
     """, unsafe_allow_html=True)
 
